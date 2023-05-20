@@ -1,0 +1,4 @@
+version - get current Tracker version
+subscript - setup personal subscriptions
+silent - temporarily disable notifications
+check - immediately check for updates
