@@ -1,0 +1,7 @@
+/__pycache__/
+/.vscode/
+/logs/
+/sql/dev.sql
+/venv/
+draft.ipynb
+TODO
