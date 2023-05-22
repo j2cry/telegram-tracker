@@ -237,8 +237,10 @@ class BotService:
         # ids for active and current running channels
         active = {item['channel_id']: item['identifier'] for item in channels}
         current = {}
+        modified = {}
         for job in context.job_queue.get_jobs_by_name('listener'):
             current[job.data.cid] = job.data.name
+            modified[job.data.cid] = job.data.last_modified
             job.data.close()
             job.schedule_removal()
         # update connectors
@@ -246,7 +248,7 @@ class BotService:
             # parse connector parameters
             connectorClass = ConnectorMap[channel['connector'].upper()].value
             config = json.loads(channel['config'])
-            connector = connectorClass(channel['channel_id'], channel['identifier'], logger=self.logger, **config)
+            connector = connectorClass(channel['channel_id'], channel['identifier'], modified=modified.get(channel['channel_id']), logger=self.logger, **config)
             # create listener job
             context.job_queue.run_repeating(self._listen, interval=float(channel['polling']), first=0, name='listener', data=connector)
         # send notifications
@@ -260,10 +262,11 @@ class BotService:
                 for subscriber in self.get_subscribers(cid):
                     await context.bot.send_message(subscriber, NOTIFICATION.format(name=current[cid]))
         # reschedule actualizer job
-        for job in context.job_queue.get_jobs_by_name('actualize'):
-            job.schedule_removal()
-        ACTUALIZE_INTERVAL = self.get_parameter('ACTUALIZE_INTERVAL', literal_eval, default=Defaults.ACTUALIZE_INTERVAL)
-        context.job_queue.run_once(self._actualize, when=ACTUALIZE_INTERVAL, name='actualize')
+        ACTUALIZE_INTERVAL = self.get_parameter('ACTUALIZE_INTERVAL', float, default=Defaults.ACTUALIZE_INTERVAL)
+        if ACTUALIZE_INTERVAL > 0:
+            for job in context.job_queue.get_jobs_by_name('actualize'):
+                job.schedule_removal()
+            context.job_queue.run_once(self._actualize, when=ACTUALIZE_INTERVAL, name='actualize')
         self.logger.info('[SYSTEM] Channels actualized')
 
     async def _listen(self, context: CallbackContext) -> None:
