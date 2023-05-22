@@ -74,27 +74,29 @@ class FolderConnector(Connector):
         'COUNT': lambda files: f' {len(files)}'
     }
 
-    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
+    def __init__(self, cid: str | int, name: str, *, modified: tuple = None, logger=None, **kwargs):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
         self.trigger = self.TriggerOn[kwargs.get('trigger', 'ANY').upper()].value
         self.showfunc = self.showfuncMap[kwargs.get('show', 'COUNT').upper()]
+        self.last_modified = modified if modified is not None and isinstance(modified, tuple) else None
 
     def check(self):
         if not os.path.exists(self.path):
-            self.files = tuple()
-            return self.files
+            self.last_modified = tuple()
+            return self.last_modified
         files = []
         for path, dirnames, filenames in os.walk(self.path):
             files.extend(pathlib.Path(path, name).as_posix() for name in filenames)
-        if not hasattr(self, 'files'):
-            self.files = files
-            return tuple()
+        # skip first run
         content = []
-        if (_files := set(self.files).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
-            content.append(f'Removed files:{self.showfunc(_files)}')
-        if (_files := set(files).difference(self.files)) and (self.trigger & self.TriggerOn.ADD.value):
-            content.append(f'Added files:{self.showfunc(_files)}')
-        self.files = files
+        if self.last_modified is not None:
+            # check for updates
+            if (_files := set(self.last_modified).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
+                content.append(f'Removed files:{self.showfunc(_files)}')
+            if (_files := set(files).difference(self.last_modified)) and (self.trigger & self.TriggerOn.ADD.value):
+                content.append(f'Added files:{self.showfunc(_files)}')
+        # remember state
+        self.last_modified = tuple(files)
         return tuple(content)
 
 
