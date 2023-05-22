@@ -252,7 +252,7 @@ class BotService:
         # send notifications
         NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=Defaults.RESUME_SUBSCRIPTION)
         for cid in set(active).difference(current):
-            for subscriber in self.get_subscribers(channel['channel_id']):
+            for subscriber in self.get_subscribers(cid):
                 await context.bot.send_message(subscriber, NOTIFICATION.format(name=active[cid]))
         NOTIFICATION = self.get_parameter('SUSPEND_SUBSCRIPTION', default=Defaults.SUSPEND_SUBSCRIPTION)
         for cid in set(current).difference(active):
