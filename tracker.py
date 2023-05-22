@@ -240,7 +240,7 @@ class BotService:
         modified = {}
         for job in context.job_queue.get_jobs_by_name('listener'):
             current[job.data.cid] = job.data.name
-            modified[job.data.cid] = job.data.last_modified
+            modified[job.data.cid] = job.data.context
             job.data.close()
             job.schedule_removal()
         # update connectors
@@ -248,9 +248,10 @@ class BotService:
             # parse connector parameters
             connectorClass = ConnectorMap[channel['connector'].upper()].value
             config = json.loads(channel['config'])
-            connector = connectorClass(channel['channel_id'], channel['identifier'], modified=modified.get(channel['channel_id']), logger=self.logger, **config)
+            connector = connectorClass(channel['channel_id'], channel['identifier'], logger=self.logger, **config, **modified.get(channel['channel_id'], {}))
             # create listener job
-            context.job_queue.run_repeating(self._listen, interval=float(channel['polling']), first=0, name='listener', data=connector)
+            DELAY = self.get_parameter('DELAY', float, default=Defaults.DELAY)
+            context.job_queue.run_repeating(self._listen, interval=float(channel['polling']), first=DELAY, name='listener', data=connector)
         # send notifications
         if not self.get_parameter('SILENT_ACTUALIZE', literal_eval, default=False):
             NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=Defaults.RESUME_SUBSCRIPTION)
@@ -275,7 +276,7 @@ class BotService:
         content = connector.check()    # get channel updates
         if not content:
             return
-        TEXT_MAX_LENGTH = self.get_parameter('TEXT_MAX_LENGTH', literal_eval, default=Defaults.TEXT_MAX_LENGTH)
+        TEXT_MAX_LENGTH = self.get_parameter('TEXT_MAX_LENGTH', int, default=Defaults.TEXT_MAX_LENGTH)
         for subscriber in self.get_subscribers(connector.cid):
             sleep_time = context._application.user_data[subscriber].get('silent')
             if sleep_time and sleep_time > dt.datetime.now():
@@ -333,7 +334,7 @@ class BotService:
             return await self.default_reply(update, context, 'ALREADY_ACCESSIBLE', optional={'flag': flag})
         user = update.effective_user
         messages = context.bot_data['access_request'][user.id]
-        REQUEST_MAXTIME = self.get_parameter('REQUEST_MAXTIME', literal_eval, default=Defaults.REQUEST_MAXTIME)
+        REQUEST_MAXTIME = self.get_parameter('REQUEST_MAXTIME', float, default=Defaults.REQUEST_MAXTIME)
         if not messages:
             with self.__lock:   # collect admins list
                 self.__cursor.execute('SELECT user_id FROM TRACKER.permission WHERE flag >= %s', params=(Permission.ADMIN,))
@@ -391,7 +392,7 @@ class BotService:
     @logcommand
     async def shutdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """ Shutdown Tracker """
-        DELAY = self.get_parameter('DELAY', literal_eval, default=Defaults.DELAY)
+        DELAY = self.get_parameter('DELAY', float, default=Defaults.DELAY)
         await self.default_reply(update, context, 'SHUTDOWN_REPLY')
         context.job_queue.run_once(self._onclose, when=DELAY)
 
@@ -544,7 +545,7 @@ if __name__ == '__main__':
     # initialize bot handlers
     bot_service = BotService(logger, **args.__dict__)
     TOKEN = bot_service.get_parameter('TOKEN')
-    READ_TIMEOUT = bot_service.get_parameter('READ_TIMEOUT', literal_eval, default=Defaults.READ_TIMEOUT)
+    READ_TIMEOUT = bot_service.get_parameter('READ_TIMEOUT', float, default=Defaults.READ_TIMEOUT)
     application = Application.builder().token(TOKEN).read_timeout(READ_TIMEOUT).build()
     application.add_handler(CommandHandler('start', bot_service.start))
     application.add_handler(CommandHandler('version', bot_service.version))
@@ -566,7 +567,7 @@ if __name__ == '__main__':
     # setup required bot context
     application.bot_data['access_request'] = defaultdict(list)
     # run
-    application.job_queue.run_once(bot_service._onstart, when=bot_service.get_parameter('DELAY', literal_eval, default=Defaults.DELAY))
+    application.job_queue.run_once(bot_service._onstart, when=bot_service.get_parameter('DELAY', float, default=Defaults.DELAY))
     application.run_polling()
     # close
     bot_service.close()

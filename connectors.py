@@ -24,11 +24,18 @@ class Connector:
         self.cid = cid
         self.name = name
         # service parameters
-        self.last_modified = modified if modified is not None and isinstance(modified, dt.datetime) else dt.datetime.now()
+        self.last_modified = modified if isinstance(modified, dt.datetime) else dt.datetime.now()
         self.logger = logger
         # other parameters
         for k, v in kwargs.items():
             setattr(self, k, v)
+    
+    @property
+    def context(self):
+        """ Return parameters which must be saved on connector rebuild """
+        return {
+            'modified': self.last_modified
+        }
 
     def check(self) -> tuple:
         """ Check channel for updates and return all new messages
@@ -74,29 +81,37 @@ class FolderConnector(Connector):
         'COUNT': lambda files: f' {len(files)}'
     }
 
-    def __init__(self, cid: str | int, name: str, *, modified: tuple = None, logger=None, **kwargs):
+    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, files: tuple = None, logger=None, **kwargs):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
         self.trigger = self.TriggerOn[kwargs.get('trigger', 'ANY').upper()].value
         self.showfunc = self.showfuncMap[kwargs.get('show', 'COUNT').upper()]
-        self.last_modified = modified if modified is not None and isinstance(modified, tuple) else None
+        self.files = files if isinstance(files, tuple) else None
+
+    @property
+    def context(self):
+        return {
+            'modified': self.last_modified,
+            'files': self.files
+        }
 
     def check(self):
         if not os.path.exists(self.path):
-            self.last_modified = tuple()
-            return self.last_modified
+            self.files = tuple()
+            return self.files
         files = []
         for path, dirnames, filenames in os.walk(self.path):
             files.extend(pathlib.Path(path, name).as_posix() for name in filenames)
         # skip first run
         content = []
-        if self.last_modified is not None:
+        if self.files is not None:
             # check for updates
-            if (_files := set(self.last_modified).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
+            if (_files := set(self.files).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
                 content.append(f'Removed files:{self.showfunc(_files)}')
-            if (_files := set(files).difference(self.last_modified)) and (self.trigger & self.TriggerOn.ADD.value):
+            if (_files := set(files).difference(self.files)) and (self.trigger & self.TriggerOn.ADD.value):
                 content.append(f'Added files:{self.showfunc(_files)}')
+            self.last_modified = dt.datetime.now()
         # remember state
-        self.last_modified = tuple(files)
+        self.files = tuple(files)
         return tuple(content)
 
 
