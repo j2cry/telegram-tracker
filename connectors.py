@@ -1,9 +1,8 @@
 import os
-import asyncio
+import pathlib
 import importlib
 import datetime as dt
 from enum import Enum
-from typing import Union
 
 
 class Connector:
@@ -65,21 +64,36 @@ class FileConnector(Connector):
 
 class FolderConnector(Connector):
     """ Listen on folder for changes """
+    class TriggerOn(Enum):
+        ADD = 0x01
+        DEL = 0x02
+        ANY = 0x03
+
+    showfuncMap = {
+        'LIST': lambda files: '\n' + '\n'.join(files),
+        'COUNT': lambda files: f' {len(files)}'
+    }
+
+    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
+        super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
+        self.trigger = self.TriggerOn[kwargs.get('trigger', 'ANY').upper()].value
+        self.showfunc = self.showfuncMap[kwargs.get('show', 'COUNT').upper()]
+
     def check(self):
         if not os.path.exists(self.path):
             self.files = tuple()
             return self.files
         files = []
         for path, dirnames, filenames in os.walk(self.path):
-            files.extend(os.path.join(path, name) for name in filenames)
+            files.extend(pathlib.Path(path, name).as_posix() for name in filenames)
         if not hasattr(self, 'files'):
             self.files = files
             return tuple()
         content = []
-        if _files := set(self.files).difference(files):
-            content.append(f'Removed files:\n' + '\n'.join(_files))
-        if _files := set(files).difference(self.files):
-            content.append(f'Added files:\n' + '\n'.join(_files))
+        if (_files := set(self.files).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
+            content.append(f'Removed files:{self.showfunc(_files)}')
+        if (_files := set(files).difference(self.files)) and (self.trigger & self.TriggerOn.ADD.value):
+            content.append(f'Added files:{self.showfunc(_files)}')
         self.files = files
         return tuple(content)
 
