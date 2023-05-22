@@ -12,6 +12,7 @@ INSERT INTO TRACKER.parameter VALUES
     ('CHANNELS_PER_PAGE', '5'),
     ('DELAY', '2.5'),
     ('ACTUALIZE_INTERVAL', '900'),
+    ('SILENT_ACTUALIZE', 'False'),
     -- MESSAGES
     ('NOT_ALLOWED', 'Your permission level ({flag}) is insufficient to perform this operation.'),
     ('ACCESS_REQUESTED', 'You have requested access. Your request is valid until {maxtime}. If you have not received a response after this time, contact the administrator.'),
@@ -27,8 +28,7 @@ INSERT INTO TRACKER.parameter VALUES
     ('RESUME_SUBSCRIPTION', 'Channel {name} was enabled. Your subscription has been renewed.'),
     ('CHECK_REPLY', 'Forcing listeners...'),
     ('ACTUALIZE_REPLY', 'Connectors configuration reloaded.'),
-    ('SHUTDOWN_REPLY', 'Shutdown job was scheduled. See ya!'),
-    ('SILENT_ACTUALIZE', 'False')
+    ('SHUTDOWN_REPLY', 'Shutdown job was scheduled. See ya!')
 
 
 DROP TABLE IF EXISTS TRACKER.permission
@@ -42,7 +42,7 @@ DROP TABLE IF EXISTS TRACKER.channel
 CREATE TABLE TRACKER.channel (
     channel_id  int             NOT NULL IDENTITY(1,1),     -- in-code identifier
     identifier  varchar(50)     NOT NULL UNIQUE,            -- channel visible name
-    connector   varchar(50)         NULL,                   -- connector type; use NULL for FileConnector
+    connector   varchar(50)     NOT NULL,                   -- connector type
     config      varchar(max)    NOT NULL,                   -- connector destination (table or file)
     polling     decimal(9, 2)   NOT NULL,                   -- polling interval
     active      bit             NOT NULL DEFAULT 1
