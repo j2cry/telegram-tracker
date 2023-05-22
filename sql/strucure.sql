@@ -27,7 +27,8 @@ INSERT INTO TRACKER.parameter VALUES
     ('RESUME_SUBSCRIPTION', 'Channel {name} was enabled. Your subscription has been renewed.'),
     ('CHECK_REPLY', 'Forcing listeners...'),
     ('ACTUALIZE_REPLY', 'Connectors configuration reloaded.'),
-    ('SHUTDOWN_REPLY', 'Shutdown job was scheduled. See ya!')
+    ('SHUTDOWN_REPLY', 'Shutdown job was scheduled. See ya!'),
+    ('SILENT_ACTUALIZE', 'False')
 
 
 DROP TABLE IF EXISTS TRACKER.permission

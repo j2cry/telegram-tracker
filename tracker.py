@@ -250,14 +250,15 @@ class BotService:
             # create listener job
             context.job_queue.run_repeating(self._listen, interval=float(channel['polling']), first=0, name='listener', data=connector)
         # send notifications
-        NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=Defaults.RESUME_SUBSCRIPTION)
-        for cid in set(active).difference(current):
-            for subscriber in self.get_subscribers(channel['channel_id']):
-                await context.bot.send_message(subscriber, NOTIFICATION.format(name=active[cid]))
-        NOTIFICATION = self.get_parameter('SUSPEND_SUBSCRIPTION', default=Defaults.SUSPEND_SUBSCRIPTION)
-        for cid in set(current).difference(active):
-            for subscriber in self.get_subscribers(cid):
-                await context.bot.send_message(subscriber, NOTIFICATION.format(name=current[cid]))
+        if not self.get_parameter('SILENT_ACTUALIZE', literal_eval, default=False):
+            NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=Defaults.RESUME_SUBSCRIPTION)
+            for cid in set(active).difference(current):
+                for subscriber in self.get_subscribers(cid):
+                    await context.bot.send_message(subscriber, NOTIFICATION.format(name=active[cid]))
+            NOTIFICATION = self.get_parameter('SUSPEND_SUBSCRIPTION', default=Defaults.SUSPEND_SUBSCRIPTION)
+            for cid in set(current).difference(active):
+                for subscriber in self.get_subscribers(cid):
+                    await context.bot.send_message(subscriber, NOTIFICATION.format(name=current[cid]))
         # reschedule actualizer job
         for job in context.job_queue.get_jobs_by_name('actualize'):
             job.schedule_removal()

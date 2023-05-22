@@ -60,3 +60,28 @@ Contains information about individual subscriptions.
 The project intentionally does not contain any build and deployment ways. You can develop the necessary one based on your needs. There are some ideas below:
 1. pyinstaller for Windows standalone
 2. docker for Linux/Windows
+
+## Connectors configuration
+Connector parameters should be passed as stringified JSON to `TRACKER.channel.config` field.
+### File connector
+| name | description                |
+|------|----------------------------|
+| path | REQUIRED. Path to the file |
+
+
+### Folder connector
+| name    | type              | description                                                  |
+|---------|-------------------|--------------------------------------------------------------|
+| path    | str               | REQUIRED. Path to the folder                                 |
+| trigger | ADD \| DEL \| ANY | DEFAULT ANY. Triggering mode: on added/removed files         |
+| show    | LIST \| COUNT     | DEFAULT COUNT. Show changes as number of files or files list |
+
+### SQL connector
+| name     | description                                                                             |
+|----------|-----------------------------------------------------------------------------------------|
+| engine   | REQUIRED. Using module for connection. Must be installed in environment                 |
+| server   | REQUIRED. Server IP or Host                                                             |
+| database | REQUIRED. Database name                                                                 |
+| table    | REQUIRED. Table or view name including schema                                           |
+| order    | REQUIRED. The field by which the sorting takes place. Case-sensitive. Must be DATETIME. |
+| charset  | Set table charset                                                                       |
