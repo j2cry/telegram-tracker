@@ -44,7 +44,7 @@ CREATE TABLE TRACKER.channel (
     identifier  varchar(50)     NOT NULL UNIQUE,            -- channel visible name
     connector   varchar(50)     NOT NULL,                   -- connector type
     config      varchar(max)    NOT NULL,                   -- connector destination (table or file)
-    polling     decimal(9, 2)   NOT NULL,                   -- polling interval
+    polling     varchar(8)      NOT NULL,                   -- polling interval or fixed time
     active      bit             NOT NULL DEFAULT 1
 )
 

@@ -6,7 +6,7 @@ from enum import Enum
 
 
 class Connector:
-    def __init__(self, cid: str|int, name: str, *, modified: dt.datetime=None, logger=None, **kwargs):
+    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
         """ Base connector initializer
 
         Parameters
@@ -18,7 +18,7 @@ class Connector:
         modified : datetime
             Last modified moment
         logger : ...
-        
+
         """
         # common parameters
         self.cid = cid
@@ -29,7 +29,7 @@ class Connector:
         # other parameters
         for k, v in kwargs.items():
             setattr(self, k, v)
-    
+
     @property
     def context(self):
         """ Return parameters which must be saved on connector rebuild """
@@ -39,13 +39,13 @@ class Connector:
 
     def check(self) -> tuple:
         """ Check channel for updates and return all new messages
-        
+
         Return
         ------
         tuple of str
         """
         # NOTE for implementation in nested connectors
-    
+
     def close(self) -> None:
         """ Do something on closing application """
         # for implementation in nested connectors
@@ -99,7 +99,7 @@ class FolderConnector(Connector):
             self.files = tuple()
             return self.files
         files = []
-        for path, dirnames, filenames in os.walk(self.path):
+        for path, _, filenames in os.walk(self.path):
             files.extend(pathlib.Path(path, name).as_posix() for name in filenames)
         # skip first run
         content = []
@@ -119,8 +119,10 @@ class SQLConnector(Connector):
     """ Listen on SQL table for updates """
     def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
+        self.__conn = None
+        self.__cursor = None
         self.state = self.connect()
-    
+
     def connect(self):
         """ Establish SQL connection """
         try:
@@ -134,12 +136,14 @@ class SQLConnector(Connector):
             self.__cursor = self.__conn.cursor()
         except Exception as ex:
             return ex
-    
+
     def close(self):
         """ Close SQL connection """
-        self.__cursor.close()
-        self.__conn.close()
-    
+        if self.__cursor is not None:
+            self.__cursor.close()
+        if self.__conn is not None:
+            self.__conn.close()
+
     def check(self) -> tuple:
         if self.state:
             return (str(self.state),)

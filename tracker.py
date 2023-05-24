@@ -15,7 +15,7 @@ from functools import wraps
 from enum import Enum
 from typing import Any, Mapping
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, ContextTypes, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Application, Defaults, ContextTypes, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from connectors import ConnectorMap, Connector
 
 
@@ -38,7 +38,7 @@ class Permission:
     REGISTRED = USER | ADMIN | MASTER
 
 
-class Defaults:
+class DefaultConfig:
     REQUEST_MAXTIME = 43200 # 12 hours
     READ_TIMEOUT = 150      # 2.5 minutes
     CHANNELS_PER_PAGE = 5
@@ -46,6 +46,7 @@ class Defaults:
     SUBSCRIPTIONS_MENU_HEADER = 'Currently available channels ({page}/{total})'
     TEXT_MAX_LENGTH = 4096
     ACTUALIZE_INTERVAL = 900
+    POLLING = 600
     SUSPEND_SUBSCRIPTION = 'Channel {name} was disabled. Your subscription has been suspended.'
     RESUME_SUBSCRIPTION = 'Channel {name} was enabled. Your subscription has been renewed.'
 
@@ -70,6 +71,32 @@ class BotService:
     def close(self) -> None:
         self.__cursor.close()
         self.__conn.close()
+
+    @staticmethod
+    def parse_jobtime(value: str, **kwargs):
+        """ Job time parser. Returns parsed value of first applicable format or default value. If default is not specifed raises ValueError
+
+        Parameters
+        ----------
+        value : str
+            Original parameter value
+        default : Any
+            Default job time value
+
+        Return
+        ------
+        float or time
+        """
+        formatter = (float, dt.time.fromisoformat)
+        for func in formatter:
+            try:
+                return func(value)
+            except:
+                ...
+        if 'default' in kwargs:
+            return kwargs['default']
+        else:
+            raise ValueError('None of the known formats are applicable')
 
     def get_parameter(self, key: str, recast=lambda v: v, default=None) -> Any:
         """ Get global parameter or default if parameter not exists
@@ -238,7 +265,9 @@ class BotService:
         active = {item['channel_id']: item['identifier'] for item in channels}
         current = {}
         modified = {}
-        for job in context.job_queue.get_jobs_by_name('listener'):
+        for job in context.job_queue.jobs():
+            if not job.name.startswith('listener'):
+                continue
             current[job.data.cid] = job.data.name
             modified[job.data.cid] = job.data.context
             job.data.close()
@@ -250,24 +279,31 @@ class BotService:
             config = json.loads(channel['config'])
             connector = connectorClass(channel['channel_id'], channel['identifier'], logger=self.logger, **config, **modified.get(channel['channel_id'], {}))
             # create listener job
-            DELAY = self.get_parameter('DELAY', float, default=Defaults.DELAY)
-            context.job_queue.run_repeating(self._listen, interval=float(channel['polling']), first=DELAY, name='listener', data=connector)
+            jobtime = self.parse_jobtime(channel['polling'], default=DefaultConfig.POLLING)
+            if isinstance(jobtime, dt.time):
+                job = context.job_queue.run_daily(self._listen, time=jobtime, name=f'listener{connector.cid}', data=connector)
+            else:
+                job = context.job_queue.run_repeating(self._listen, interval=jobtime, name=f'listener{connector.cid}', data=connector)
+            # first run for initiation
+            await job.run(context.application)
+            self.logger.info(f'Listener job for {job.data.name} scheduled at {job.next_t}')
         # send notifications
         if not self.get_parameter('SILENT_ACTUALIZE', literal_eval, default=False):
-            NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=Defaults.RESUME_SUBSCRIPTION)
+            NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=DefaultConfig.RESUME_SUBSCRIPTION)
             for cid in set(active).difference(current):
                 for subscriber in self.get_subscribers(cid):
                     await context.bot.send_message(subscriber, NOTIFICATION.format(name=active[cid]))
-            NOTIFICATION = self.get_parameter('SUSPEND_SUBSCRIPTION', default=Defaults.SUSPEND_SUBSCRIPTION)
+            NOTIFICATION = self.get_parameter('SUSPEND_SUBSCRIPTION', default=DefaultConfig.SUSPEND_SUBSCRIPTION)
             for cid in set(current).difference(active):
                 for subscriber in self.get_subscribers(cid):
                     await context.bot.send_message(subscriber, NOTIFICATION.format(name=current[cid]))
         # reschedule actualizer job
-        ACTUALIZE_INTERVAL = self.get_parameter('ACTUALIZE_INTERVAL', float, default=Defaults.ACTUALIZE_INTERVAL)
+        ACTUALIZE_INTERVAL = self.get_parameter('ACTUALIZE_INTERVAL', self.parse_jobtime, default=DefaultConfig.ACTUALIZE_INTERVAL)
         if ACTUALIZE_INTERVAL > 0:
             for job in context.job_queue.get_jobs_by_name('actualize'):
                 job.schedule_removal()
-            context.job_queue.run_once(self._actualize, when=ACTUALIZE_INTERVAL, name='actualize')
+            job = context.job_queue.run_once(self._actualize, when=ACTUALIZE_INTERVAL, name='actualize')
+            self.logger.info(f'Actualizer job scheduled at {job.next_t}.')
         self.logger.info('[SYSTEM] Channels actualized')
 
     async def _listen(self, context: CallbackContext) -> None:
@@ -275,8 +311,9 @@ class BotService:
         connector: Connector = context.job.data
         content = connector.check()    # get channel updates
         if not content:
+            self.logger.info(f'Channel {connector.cid} ({connector.name}) has no updates.')
             return
-        TEXT_MAX_LENGTH = self.get_parameter('TEXT_MAX_LENGTH', int, default=Defaults.TEXT_MAX_LENGTH)
+        TEXT_MAX_LENGTH = self.get_parameter('TEXT_MAX_LENGTH', int, default=DefaultConfig.TEXT_MAX_LENGTH)
         for subscriber in self.get_subscribers(connector.cid):
             sleep_time = context._application.user_data[subscriber].get('silent')
             if sleep_time and sleep_time > dt.datetime.now():
@@ -294,6 +331,7 @@ class BotService:
                     else:
                         self.logger.info(f'[SENT] {subscriber} ' + _message_part.replace('\n', ' '))
                 # message proceeded
+        self.logger.info(f'Channel {connector.cid} ({connector.name}) update succeed.')
 
     async def _silent_off(self, context: CallbackContext) -> None:
         """ Silent mode was ended notification """
@@ -312,8 +350,7 @@ class BotService:
 
     async def _onstart(self, context: CallbackContext) -> None:
         """ Start log listeners """
-        context.job_queue.run_once(self._actualize, when=0, name='actualize')
-        self.logger.info('Actualizer job scheduled.')
+        await self._actualize(context)
 
     async def _onclose(self, context: CallbackContext) -> None:
         """ Stop log listeners and kill self """
@@ -321,6 +358,10 @@ class BotService:
         self.logger.info('All jobs have been removed.')
         os.kill(os.getpid(), signal.SIGTERM)
         self.logger.info('SIGTERM was sent.')
+
+    async def _error(self, update: object, context: CallbackContext):
+        """ Error handler """
+        self.logger.info(f'[ERROR] {context.error}')
 
     @logcommand
     async def version(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -334,7 +375,7 @@ class BotService:
             return await self.default_reply(update, context, 'ALREADY_ACCESSIBLE', optional={'flag': flag})
         user = update.effective_user
         messages = context.bot_data['access_request'][user.id]
-        REQUEST_MAXTIME = self.get_parameter('REQUEST_MAXTIME', float, default=Defaults.REQUEST_MAXTIME)
+        REQUEST_MAXTIME = self.get_parameter('REQUEST_MAXTIME', float, default=DefaultConfig.REQUEST_MAXTIME)
         if not messages:
             with self.__lock:   # collect admins list
                 self.__cursor.execute('SELECT user_id FROM TRACKER.permission WHERE flag >= %s', params=(Permission.ADMIN,))
@@ -352,12 +393,9 @@ class BotService:
             request_text = self.get_parameter('ACCESS_REQUEST_MESSAGE').format(username=user.username if user.username else user.id, maxtime=maxtime)
             for admin in admins:
                 messages.append(await context.bot.send_message(admin, request_text, reply_markup=markup))
-            jobtime = maxtime.astimezone(context.job_queue.scheduler.timezone)
-            context.job_queue.run_once(self._access_autoreject, jobtime, name=f'access{user.id}', user_id=user.id)
+            context.job_queue.run_once(self._access_autoreject, maxtime, name=f'access{user.id}', user_id=user.id)
         else:
-            # recast DT to local
-            TIMEZONE = dt.datetime.now().astimezone().tzinfo
-            maxtime = context.job_queue.get_jobs_by_name(f'access{user.id}')[0].next_t.astimezone(TIMEZONE).replace(tzinfo=None)
+            maxtime = context.job_queue.get_jobs_by_name(f'access{user.id}')[0].next_t
         await self.default_reply(update, context, 'ACCESS_REQUESTED', optional={'maxtime': maxtime})
 
     @access(Permission.MASTER | Permission.ADMIN)
@@ -385,14 +423,14 @@ class BotService:
     @logcommand
     async def actualize(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """ Syncronize listener jobs with actual channels list """
-        context.job_queue.run_once(self._actualize, when=0, name='actualize')
+        await self._actualize(context)
         await self.default_reply(update, context, 'ACTUALIZE_REPLY')
 
     @access(Permission.MASTER)
     @logcommand
     async def shutdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """ Shutdown Tracker """
-        DELAY = self.get_parameter('DELAY', float, default=Defaults.DELAY)
+        DELAY = self.get_parameter('DELAY', float, default=DefaultConfig.DELAY)
         await self.default_reply(update, context, 'SHUTDOWN_REPLY')
         context.job_queue.run_once(self._onclose, when=DELAY)
 
@@ -420,11 +458,11 @@ class BotService:
         # calculate current page
         channels = self.get_active_channels()
         try:
-            PER_PAGE = self.get_parameter('CHANNELS_PER_PAGE', int, default=Defaults.CHANNELS_PER_PAGE)
+            PER_PAGE = self.get_parameter('CHANNELS_PER_PAGE', int, default=DefaultConfig.CHANNELS_PER_PAGE)
             if PER_PAGE < 1:
                 raise ValueError()
         except:
-            PER_PAGE = Defaults.CHANNELS_PER_PAGE
+            PER_PAGE = DefaultConfig.CHANNELS_PER_PAGE
         maxpage = math.ceil(len(channels) / PER_PAGE) - 1
         if page < 0:
             page = maxpage
@@ -436,7 +474,7 @@ class BotService:
             [InlineKeyboardButton('<<', callback_data=f'subscript,{page - 1},None'), InlineKeyboardButton('>>', callback_data=f'subscript,{page + 1},None')],
             [InlineKeyboardButton('OK', callback_data='subscript,ok,None')]
         ])
-        TEXT = self.get_parameter('SUBSCRIPTIONS_MENU_HEADER', default=Defaults.SUBSCRIPTIONS_MENU_HEADER).format(page=page + 1, total=maxpage + 1)
+        TEXT = self.get_parameter('SUBSCRIPTIONS_MENU_HEADER', default=DefaultConfig.SUBSCRIPTIONS_MENU_HEADER).format(page=page + 1, total=maxpage + 1)
         if message is None:
             context.user_data['subscription'] = await context.bot.send_message(user.id, TEXT, reply_markup=markup)
         else:
@@ -482,12 +520,14 @@ class BotService:
     async def check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """ Check for channel updates immediately without affecting on scheduled jobs """
         message = await self.default_reply(update, context, 'CHECK_REPLY')
-        for job in context.job_queue.get_jobs_by_name('listener'):
-            await job.run(context.application)
+        for job in context.job_queue.jobs():
+            if job.name.startswith('listener'):
+                await job.run(context.application)
         # await message.edit_text('done')
 
 
 
+    @access(Permission.MASTER)
     async def debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """ Debug feature """
         ...
@@ -534,7 +574,7 @@ if __name__ == '__main__':
         maxBytes=args.logsize,
         backupCount=args.logbackup,
         encoding='utf-8'
-    )    
+    )
     log_handler.setFormatter(logging.Formatter('[%(levelname)s] %(asctime)s > %(message)s'))
     log_handler.setLevel(args.loglevel)
     logger = logging.getLogger('TelegramTrackerService')
@@ -545,8 +585,10 @@ if __name__ == '__main__':
     # initialize bot handlers
     bot_service = BotService(logger, **args.__dict__)
     TOKEN = bot_service.get_parameter('TOKEN')
-    READ_TIMEOUT = bot_service.get_parameter('READ_TIMEOUT', float, default=Defaults.READ_TIMEOUT)
-    application = Application.builder().token(TOKEN).read_timeout(READ_TIMEOUT).build()
+    READ_TIMEOUT = bot_service.get_parameter('READ_TIMEOUT', float, default=DefaultConfig.READ_TIMEOUT)
+    # DefaultConfig = DefaultConfig()
+    TIMEZONE = dt.datetime.now().astimezone().tzinfo
+    application = Application.builder().token(TOKEN).read_timeout(READ_TIMEOUT).defaults(Defaults(tzinfo=TIMEZONE)).build()
     application.add_handler(CommandHandler('start', bot_service.start))
     application.add_handler(CommandHandler('version', bot_service.version))
     application.add_handler(CommandHandler('subscript', bot_service.subscript))
@@ -557,6 +599,8 @@ if __name__ == '__main__':
     # inline callbacks
     application.add_handler(CallbackQueryHandler(bot_service.access_response, 'access'))
     application.add_handler(CallbackQueryHandler(bot_service.subscript, 'subscript'))
+    # error handler
+    application.add_error_handler(bot_service._error)
     # debug commands
     application.add_handler(CommandHandler("debug", bot_service.debug))
     application.add_handler(CommandHandler("master", bot_service.master))
@@ -567,12 +611,12 @@ if __name__ == '__main__':
     # setup required bot context
     application.bot_data['access_request'] = defaultdict(list)
     # run
-    application.job_queue.run_once(bot_service._onstart, when=bot_service.get_parameter('DELAY', float, default=Defaults.DELAY))
+    application.job_queue.run_once(bot_service._onstart, when=bot_service.get_parameter('DELAY', float, default=DefaultConfig.DELAY))
     application.run_polling()
     # close
     bot_service.close()
     # close logger
     for handler in logger.handlers:
         handler.close()
-        logger.removeHandler(handler) 
+        logger.removeHandler(handler)
     print('done.')
