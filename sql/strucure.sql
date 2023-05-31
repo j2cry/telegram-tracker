@@ -11,7 +11,7 @@ INSERT INTO TRACKER.parameter VALUES
     ('READ_TIMEOUT', '150'),
     ('CHANNELS_PER_PAGE', '5'),
     ('DELAY', '2.5'),
-    ('ACTUALIZE_INTERVAL', '900'),
+    ('ACTUALIZE_INTERVAL', '00:00'),
     ('SILENT_ACTUALIZE', 'False'),
     -- MESSAGES
     ('NOT_ALLOWED', 'Your permission level ({flag}) is insufficient to perform this operation.'),

@@ -45,7 +45,7 @@ class DefaultConfig:
     DELAY = 2.5
     SUBSCRIPTIONS_MENU_HEADER = 'Currently available channels ({page}/{total})'
     TEXT_MAX_LENGTH = 4096
-    ACTUALIZE_INTERVAL = 900
+    ACTUALIZE_INTERVAL = dt.time(0, 0)
     POLLING = 600
     SUSPEND_SUBSCRIPTION = 'Channel {name} was disabled. Your subscription has been suspended.'
     RESUME_SUBSCRIPTION = 'Channel {name} was enabled. Your subscription has been renewed.'
@@ -286,7 +286,6 @@ class BotService:
                 job = context.job_queue.run_repeating(self._listen, interval=jobtime, name=f'listener{connector.cid}', data=connector)
             # first run for initiation
             await job.run(context.application)
-            self.logger.info(f'Listener job for {job.data.name} scheduled at {job.next_t}')
         # send notifications
         if not self.get_parameter('SILENT_ACTUALIZE', literal_eval, default=False):
             NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=DefaultConfig.RESUME_SUBSCRIPTION)
@@ -299,7 +298,9 @@ class BotService:
                     await context.bot.send_message(subscriber, NOTIFICATION.format(name=current[cid]))
         # reschedule actualizer job
         ACTUALIZE_INTERVAL = self.get_parameter('ACTUALIZE_INTERVAL', self.parse_jobtime, default=DefaultConfig.ACTUALIZE_INTERVAL)
-        if ACTUALIZE_INTERVAL > 0:
+        if isinstance(ACTUALIZE_INTERVAL, dt.time):
+            ACTUALIZE_INTERVAL = ACTUALIZE_INTERVAL.replace(tzinfo=context.job_queue.scheduler.timezone)
+        if isinstance(ACTUALIZE_INTERVAL, dt.time) or ACTUALIZE_INTERVAL > 0:
             for job in context.job_queue.get_jobs_by_name('actualize'):
                 job.schedule_removal()
             job = context.job_queue.run_once(self._actualize, when=ACTUALIZE_INTERVAL, name='actualize')
@@ -308,6 +309,7 @@ class BotService:
 
     async def _listen(self, context: CallbackContext) -> None:
         """ Send notifications """
+        self.logger.info(f'Listener job for {context.job.data.name} scheduled at {context.job.next_t}')
         connector: Connector = context.job.data
         content = connector.check()    # get channel updates
         if not content:
@@ -523,9 +525,16 @@ class BotService:
         for job in context.job_queue.jobs():
             if job.name.startswith('listener'):
                 await job.run(context.application)
-        # await message.edit_text('done')
+        await message.reply_text('done')
 
-
+    @access(Permission.MASTER)
+    async def state(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """ Return current Tracker state """
+        # collect scheduled jobs
+        _state = f'[{dt.datetime.now().replace(microsecond=0)}] SELF STATE:\n'
+        for job in context.job_queue.jobs():
+            _state += f'{getattr(job.data, "name", job.name)} @ {job.next_t.replace(microsecond=0, tzinfo=None)}\n'
+        await context.bot.send_message(update.effective_user.id, _state)
 
     @access(Permission.MASTER)
     async def debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -595,6 +604,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('silent', bot_service.silent))
     application.add_handler(CommandHandler('check', bot_service.check))
     application.add_handler(CommandHandler('actualize', bot_service.actualize))
+    application.add_handler(CommandHandler('state', bot_service.state))
     application.add_handler(CommandHandler('shutdown', bot_service.shutdown))
     # inline callbacks
     application.add_handler(CallbackQueryHandler(bot_service.access_response, 'access'))
