@@ -13,6 +13,7 @@ Contains general key:value parameters
 | CHANNELS_PER_PAGE  | Number of items per page in subscriptions menu                 |
 | DELAY              | Timeout before starting and stopping listeners                 |
 | ACTUALIZE_INTERVAL | Interval between connector configurations reload               |
+| SILENT_ACTUALIZE   | Notify subscribers if channel was enabled/disabled             |
 
 ### `TRACKER.permission`
 Contains user access level flags.

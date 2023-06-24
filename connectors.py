@@ -3,10 +3,11 @@ import pathlib
 import importlib
 import datetime as dt
 from enum import Enum
+from itertools import chain
 
 
 class Connector:
-    def __init__(self, cid: str|int, name: str, *, modified: dt.datetime=None, logger=None, **kwargs):
+    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
         """ Base connector initializer
 
         Parameters
@@ -18,27 +19,34 @@ class Connector:
         modified : datetime
             Last modified moment
         logger : ...
-        
+
         """
         # common parameters
         self.cid = cid
         self.name = name
         # service parameters
-        self.last_modified = modified if modified is not None and isinstance(modified, dt.datetime) else dt.datetime.now()
+        self.last_modified = modified if isinstance(modified, dt.datetime) else dt.datetime.now()
         self.logger = logger
         # other parameters
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    @property
+    def context(self):
+        """ Return parameters which must be saved on connector rebuild """
+        return {
+            'modified': self.last_modified
+        }
+
     def check(self) -> tuple:
         """ Check channel for updates and return all new messages
-        
+
         Return
         ------
         tuple of str
         """
         # NOTE for implementation in nested connectors
-    
+
     def close(self) -> None:
         """ Do something on closing application """
         # for implementation in nested connectors
@@ -74,27 +82,39 @@ class FolderConnector(Connector):
         'COUNT': lambda files: f' {len(files)}'
     }
 
-    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
+    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, files: tuple = None, logger=None, **kwargs):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
         self.trigger = self.TriggerOn[kwargs.get('trigger', 'ANY').upper()].value
         self.showfunc = self.showfuncMap[kwargs.get('show', 'COUNT').upper()]
+        # collect files on first run
+        self.files = files if isinstance(files, tuple) else \
+            tuple(*chain((pathlib.Path(path, name).as_posix() for name in filenames) for path, _, filenames in os.walk(self.path)))
+
+    @property
+    def context(self):
+        return {
+            'modified': self.last_modified,
+            'files': self.files
+        }
 
     def check(self):
         if not os.path.exists(self.path):
             self.files = tuple()
             return self.files
         files = []
-        for path, dirnames, filenames in os.walk(self.path):
+        for path, _, filenames in os.walk(self.path):
             files.extend(pathlib.Path(path, name).as_posix() for name in filenames)
-        if not hasattr(self, 'files'):
-            self.files = files
-            return tuple()
+        # skip first run
         content = []
-        if (_files := set(self.files).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
-            content.append(f'Removed files:{self.showfunc(_files)}')
-        if (_files := set(files).difference(self.files)) and (self.trigger & self.TriggerOn.ADD.value):
-            content.append(f'Added files:{self.showfunc(_files)}')
-        self.files = files
+        if self.files is not None:
+            # check for updates
+            if (_files := set(self.files).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
+                content.append(f'Removed files:{self.showfunc(_files)}')
+            if (_files := set(files).difference(self.files)) and (self.trigger & self.TriggerOn.ADD.value):
+                content.append(f'Added files:{self.showfunc(_files)}')
+            self.last_modified = dt.datetime.now()
+        # remember state
+        self.files = tuple(files)
         return tuple(content)
 
 
@@ -102,8 +122,10 @@ class SQLConnector(Connector):
     """ Listen on SQL table for updates """
     def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
+        self.__conn = None
+        self.__cursor = None
         self.state = self.connect()
-    
+
     def connect(self):
         """ Establish SQL connection """
         try:
@@ -117,12 +139,14 @@ class SQLConnector(Connector):
             self.__cursor = self.__conn.cursor()
         except Exception as ex:
             return ex
-    
+
     def close(self):
         """ Close SQL connection """
-        self.__cursor.close()
-        self.__conn.close()
-    
+        if self.__cursor is not None:
+            self.__cursor.close()
+        if self.__conn is not None:
+            self.__conn.close()
+
     def check(self) -> tuple:
         if self.state:
             return (str(self.state),)
