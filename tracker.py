@@ -45,7 +45,7 @@ class DefaultConfig:
     DELAY = 2.5
     SUBSCRIPTIONS_MENU_HEADER = 'Currently available channels ({page}/{total})'
     TEXT_MAX_LENGTH = 4096
-    ACTUALIZE_INTERVAL = dt.time(0, 0)
+    ACTUALIZE_INTERVAL = 900
     POLLING = 600
     SUSPEND_SUBSCRIPTION = 'Channel {name} was disabled. Your subscription has been suspended.'
     RESUME_SUBSCRIPTION = 'Channel {name} was enabled. Your subscription has been renewed.'
@@ -284,8 +284,7 @@ class BotService:
                 job = context.job_queue.run_daily(self._listen, time=jobtime, name=f'listener{connector.cid}', data=connector)
             else:
                 job = context.job_queue.run_repeating(self._listen, interval=jobtime, name=f'listener{connector.cid}', data=connector)
-            # first run for initiation
-            await job.run(context.application)
+            self.logger.info(f'Listener job for {job.data.name} scheduled at {job.next_t}')
         # send notifications
         if not self.get_parameter('SILENT_ACTUALIZE', literal_eval, default=False):
             NOTIFICATION = self.get_parameter('RESUME_SUBSCRIPTION', default=DefaultConfig.RESUME_SUBSCRIPTION)

@@ -3,6 +3,7 @@ import pathlib
 import importlib
 import datetime as dt
 from enum import Enum
+from itertools import chain
 
 
 class Connector:
@@ -85,7 +86,9 @@ class FolderConnector(Connector):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
         self.trigger = self.TriggerOn[kwargs.get('trigger', 'ANY').upper()].value
         self.showfunc = self.showfuncMap[kwargs.get('show', 'COUNT').upper()]
-        self.files = files if isinstance(files, tuple) else None
+        # collect files on first run
+        self.files = files if isinstance(files, tuple) else \
+            tuple(*chain((pathlib.Path(path, name).as_posix() for name in filenames) for path, _, filenames in os.walk(self.path)))
 
     @property
     def context(self):
