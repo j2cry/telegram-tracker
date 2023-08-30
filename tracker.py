@@ -2,25 +2,28 @@ import os
 import re
 import signal
 import argparse
-import pymssql
 import math
 import json
 import datetime as dt
+
 import logging
 from logging.handlers import RotatingFileHandler
-from ast import literal_eval
-from threading import Lock
-from collections import defaultdict, namedtuple
-from functools import wraps
+
 from enum import Enum
-from typing import Any, Mapping
+from ast import literal_eval
+from functools import wraps
+from collections import defaultdict, namedtuple
+from typing import Any, Mapping, Callable, overload
+
+import pymssql
+import sqlalchemy as sa
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, Defaults, ContextTypes, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from connectors import ConnectorMap, Connector
 
 
 def __get_version__():
-    MAIN_VERSION = '2.0'
+    MAIN_VERSION = '2.1'
     try:
         with open('.buildno', 'r') as file:
             build = file.read().strip()
@@ -58,22 +61,22 @@ class CheckMark(Enum):
 
 class BotService:
     """ Class for handling bot service interactions """
-    def __init__(self, logger, **params):
-        self.__lock = Lock()
-        self.__conn = pymssql.connect(server=params.get('server'),
-                                      database=params.get('database'),
-                                      user=params.get('user'),
-                                      password=params.get('password'),
-                                      as_dict=True, autocommit=True)
-        self.__cursor = self.__conn.cursor()
+    def __init__(self, logger: logging.Logger, connection_string: str):
+        self.engine = sa.create_engine(connection_string)
         self.logger = logger
-
-    def close(self) -> None:
-        self.__cursor.close()
-        self.__conn.close()
+        self.meta = None
+        self.t = {}
+        self.schema = 'TRACKER'
+        self.refresh_metadata()
+    
+    def refresh_metadata(self):
+        # explore metadata
+        self.meta = sa.MetaData()
+        self.meta.reflect(self.engine, self.schema)
+        self.tables = {t.name: t for t in self.meta.tables.values()}
 
     @staticmethod
-    def parse_jobtime(value: str, **kwargs):
+    def parse_jobtime(value: str, default: float | dt.time | None = None) -> float | dt.time:
         """ Job time parser. Returns parsed value of first applicable format or default value. If default is not specifed raises ValueError
 
         Parameters
@@ -93,12 +96,12 @@ class BotService:
                 return func(value)
             except:
                 ...
-        if 'default' in kwargs:
-            return kwargs['default']
-        else:
+        if default is None:
             raise ValueError('None of the known formats are applicable')
+        else:
+            return default
 
-    def get_parameter(self, key: str, recast=lambda v: v, default=None) -> Any:
+    def get_parameter(self, key: str, recast: Callable = lambda v: v, default: Any = None) -> Any:
         """ Get global parameter or default if parameter not exists
 
         Parameters
@@ -107,20 +110,23 @@ class BotService:
             Parameter identifier
         recast : callable
             Handler function, i.e. type recast; by default returns original value
+        default : Any
+            Default parameter value
 
         Return
         ------
         Any : value of any type
         """
-        with self.__lock:
-            self.__cursor.execute('SELECT argument FROM TRACKER.parameter WHERE identifier = %s', params=(key,))
-            result = self.__cursor.fetchone()
+        t = self.tables['parameter']
+        query = sa.select(t.c.argument).where(t.c.identifier == key)
+        with self.engine.connect() as sql:
+            row = sql.execute(query).first()
         try:
-            return recast(result['argument'])
+            return recast(row.argument)
         except:
-            return result if result is not None else default
+            return default if row is None else row.argument
 
-    def get_permission_flag(self, uid: str|int) -> bool|None:
+    def get_permission_flag(self, uid: str | int) -> bool | None:
         """ Get user access level
 
         Parameters
@@ -132,12 +138,13 @@ class BotService:
         ------
         bool or None if no such user found
         """
-        with self.__lock:
-            self.__cursor.execute('SELECT flag FROM TRACKER.permission WHERE user_id = %s', params=(uid,))
-            result = self.__cursor.fetchone()
-        return result['flag'] if result else None
+        t = self.tables['permission']
+        query = sa.select(t.c.flag).where(t.c.user_id == uid)
+        with self.engine.connect() as sql:
+            if (row := sql.execute(query).first()) is not None:
+                return row.flag
 
-    def set_permission_flag(self, uid: str|int, flag: int = Permission.USER) -> None:
+    def set_permission_flag(self, uid: str | int, flag: int = Permission.USER) -> None:
         """ Set user access level
 
         Parameters
@@ -147,16 +154,17 @@ class BotService:
         flag : int
             Permission flag
         """
-        with self.__lock:
-            query = """
-                IF EXISTS (SELECT flag FROM TRACKER.permission WHERE user_id = %s)
-                    UPDATE TRACKER.permission
-                    SET flag = %s
-                    WHERE user_id = %s
-                ELSE
-                    INSERT INTO TRACKER.permission VALUES (%s, %s)
-            """
-            self.__cursor.execute(query, params=(uid, flag, uid, uid, flag))
+        t = self.tables['permission']
+        exists_query = sa.select(t.c.flag).where(t.c.user_id == uid)
+        with self.engine.connect() as sql:
+            if sql.execute(exists_query).first() is None:
+                # insert
+                query = sa.insert(t).values(user_id=uid, flag=flag)
+            else:
+                # update
+                query = sa.update(t).where(t.c.user_id == uid).values(flag=flag)
+            sql.execute(query)
+            sql.commit()
 
     def get_active_channels(self) -> tuple:
         """ Get active channels configuration
@@ -165,11 +173,12 @@ class BotService:
         ------
         tuple of dict
         """
-        with self.__lock:
-            self.__cursor.execute('SELECT * FROM TRACKER.channel WHERE active = 1')
-            return tuple(self.__cursor.fetchall())
+        t = self.tables['channel']
+        query = sa.select(t).where(t.c.active == 1)
+        with self.engine.connect() as sql:
+            return sql.execute(query).all()
 
-    def get_subscriptions(self, uid: str|int) -> tuple:
+    def get_subscriptions(self, uid: str | int) -> tuple:
         """ Get channel ids of actual user subscriptions
 
         Parameters
@@ -181,11 +190,12 @@ class BotService:
         ------
         tuple of int
         """
-        with self.__lock:
-            self.__cursor.execute('SELECT channel_id FROM TRACKER.subscription WHERE user_id = %s AND active = 1', params=(uid,))
-            return tuple(item['channel_id'] for item in self.__cursor.fetchall())
+        t = self.tables['subscription']
+        query = sa.select(t.c.channel_id).where(t.c.user_id == uid, t.c.active == 1)
+        with self.engine.connect() as sql:
+            return tuple(row.channel_id for row in sql.execute(query).all())
 
-    def set_subscription(self, uid: str|int, cid: str|int, active: bool) -> None:
+    def set_subscription(self, uid: str | int, cid: str | int, active: bool) -> None:
         """ Add or update user subscription
 
         Parameters
@@ -197,32 +207,34 @@ class BotService:
         active : bool
             New subscription status
         """
-        with self.__lock:
-            query = """
-                IF EXISTS (SELECT active FROM TRACKER.subscription WHERE user_id = %s AND channel_id = %s)
-                    UPDATE TRACKER.subscription
-                    SET active = %s
-                    WHERE user_id = %s AND channel_id = %s
-                ELSE
-                    INSERT INTO TRACKER.subscription VALUES (%s, %s, %s)
-            """
-            self.__cursor.execute(query, params=(uid, cid, active, uid, cid, uid, cid, active))
+        t = self.tables['subscription']
+        exists_query = sa.select(t).where(t.c.user_id == uid, t.c.channel_id == cid)
+        with self.engine.connect() as sql:
+            if sql.execute(exists_query).first() is None:
+                # insert
+                query = sa.insert(t).values(user_id=uid, channel_id=cid, active=active)
+            else:
+                # update
+                query = sa.update(t).where(t.c.user_id == uid, t.c.channel_id == cid).values(active=active)
+            sql.execute(query)
+            sql.commit()
 
-    def get_subscribers(self, channel_id: str|int) -> tuple:
+    def get_subscribers(self, cid: str | int) -> tuple:
         """ Get ids of users subscribed for given channel
 
         Parameters
         ----------
-        channel_id : str or int
+        cid : str or int
             Channel id
 
         Return
         ------
         tuple of int
         """
-        with self.__lock:
-            self.__cursor.execute('SELECT user_id FROM TRACKER.subscription WHERE channel_id = %s AND active = 1', params=(channel_id,))
-            return tuple(item['user_id'] for item in self.__cursor.fetchall())
+        t = self.tables['subscription']
+        query = sa.select(t.c.user_id).where(t.c.channel_id == cid, t.c.active == 1)
+        with self.engine.connect() as sql:
+            return tuple(row.user_id for row in sql.execute(query).all())
 
     def default_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, *, optional: dict = None):
         """ Get default answer and reply """
@@ -258,11 +270,20 @@ class BotService:
             return _wrapper
         return _decorator
 
+    def dispose_pool(method):
+        """ Flush connection pool decorator """
+        @wraps(method)
+        def wrapper(self, *args, **kwargs):
+            result = method(self, *args, **kwargs)
+            if self.get_parameter('DISPOSE_POOL', recast=literal_eval):
+                self.engine.dispose()
+        return wrapper
+
     async def _actualize(self, context: CallbackContext) -> None:
         """ Syncronize listener jobs with actual channels list """
         channels = self.get_active_channels()
         # ids for active and current running channels
-        active = {item['channel_id']: item['identifier'] for item in channels}
+        active = {item.channel_id: item.identifier for item in channels}
         current = {}
         modified = {}
         for job in context.job_queue.jobs():
@@ -275,11 +296,11 @@ class BotService:
         # update connectors
         for channel in channels:
             # parse connector parameters
-            connectorClass = ConnectorMap[channel['connector'].upper()].value
-            config = json.loads(channel['config'])
-            connector = connectorClass(channel['channel_id'], channel['identifier'], logger=self.logger, **config, **modified.get(channel['channel_id'], {}))
+            connectorClass = ConnectorMap[channel.connector.upper()].value
+            config = json.loads(channel.config)
+            connector = connectorClass(channel.channel_id, channel.identifier, logger=self.logger, **config, **modified.get(channel.channel_id, {}))
             # create listener job
-            jobtime = self.parse_jobtime(channel['polling'], default=DefaultConfig.POLLING)
+            jobtime = self.parse_jobtime(channel.polling, default=DefaultConfig.POLLING)
             if isinstance(jobtime, dt.time):
                 job = context.job_queue.run_daily(self._listen, time=jobtime, name=f'listener{connector.cid}', data=connector)
             else:
@@ -356,6 +377,7 @@ class BotService:
     async def _onclose(self, context: CallbackContext) -> None:
         """ Stop log listeners and kill self """
         context.job_queue.scheduler.remove_all_jobs()   # cancel all jobs
+        self.engine.dispose()
         self.logger.info('All jobs have been removed.')
         os.kill(os.getpid(), signal.SIGTERM)
         self.logger.info('SIGTERM was sent.')
@@ -378,9 +400,10 @@ class BotService:
         messages = context.bot_data['access_request'][user.id]
         REQUEST_MAXTIME = self.get_parameter('REQUEST_MAXTIME', float, default=DefaultConfig.REQUEST_MAXTIME)
         if not messages:
-            with self.__lock:   # collect admins list
-                self.__cursor.execute('SELECT user_id FROM TRACKER.permission WHERE flag >= %s', params=(Permission.ADMIN,))
-                admins = tuple(item['user_id'] for item in self.__cursor.fetchall())
+            t = self.tables['permission']
+            query = sa.select(t.c.user_id).where(t.c.flag >= Permission.ADMIN)
+            with self.engine.connect() as sql:
+                admins = tuple(row.user_id for row in sql.execute(query).all())
             if not admins:      # if there is no admins yet
                 self.set_permission_flag(user.id, Permission.MASTER)
                 return await self.default_reply(update, context, 'REQUEST_APPROVED', optional={'username': context.bot.name})
@@ -471,7 +494,7 @@ class BotService:
             page = 0
         # prepare and show subscriptions menu
         markup = InlineKeyboardMarkup([
-            *[[InlineKeyboardButton(f'{CheckMark[str(ch["channel_id"] in subscriptions).upper()].value} {ch["identifier"]}', callback_data=f'subscript,{page},{ch["channel_id"]}')] for ch in channels[PER_PAGE * page:PER_PAGE * (page + 1)]],
+            *[[InlineKeyboardButton(f'{CheckMark[str(ch.channel_id in subscriptions).upper()].value} {ch.identifier}', callback_data=f'subscript,{page},{ch.channel_id}')] for ch in channels[PER_PAGE * page:PER_PAGE * (page + 1)]],
             [InlineKeyboardButton('<<', callback_data=f'subscript,{page - 1},None'), InlineKeyboardButton('>>', callback_data=f'subscript,{page + 1},None')],
             [InlineKeyboardButton('OK', callback_data='subscript,ok,None')]
         ])
@@ -564,10 +587,7 @@ class BotService:
 if __name__ == '__main__':
     # parse initial cmd arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('-u', '--user', help='SQL username')
-    parser.add_argument('-p', '--password', help='SQL password')
-    parser.add_argument('-s', '--server', help='SQL server')
-    parser.add_argument('-d', '--database', help='SQL database')
+    parser.add_argument('connstr', help='SQL connection string')
     parser.add_argument('--logfile', default='logs/tracker.log', help='output logfile')
     parser.add_argument('--logsize', type=int, default=1048576, help='logfile max size (in bytes)')
     parser.add_argument('--logbackup', type=int, default=5, help='max number of log backups')
@@ -591,7 +611,7 @@ if __name__ == '__main__':
     logger.info('Logger initialized')
 
     # initialize bot handlers
-    bot_service = BotService(logger, **args.__dict__)
+    bot_service = BotService(logger, args.connstr)
     TOKEN = bot_service.get_parameter('TOKEN')
     READ_TIMEOUT = bot_service.get_parameter('READ_TIMEOUT', float, default=DefaultConfig.READ_TIMEOUT)
     # DefaultConfig = DefaultConfig()
@@ -622,8 +642,6 @@ if __name__ == '__main__':
     # run
     application.job_queue.run_once(bot_service._onstart, when=bot_service.get_parameter('DELAY', float, default=DefaultConfig.DELAY))
     application.run_polling()
-    # close
-    bot_service.close()
     # close logger
     for handler in logger.handlers:
         handler.close()

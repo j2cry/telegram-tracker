@@ -4,6 +4,8 @@ import importlib
 import datetime as dt
 from enum import Enum
 from itertools import chain
+from abc import ABC, abstractmethod
+import sqlalchemy as sa
 
 
 class Connector:
@@ -38,18 +40,12 @@ class Connector:
             'modified': self.last_modified
         }
 
-    def check(self) -> tuple:
-        """ Check channel for updates and return all new messages
-
-        Return
-        ------
-        tuple of str
-        """
-        # NOTE for implementation in nested connectors
+    @abstractmethod
+    def check(self) -> tuple | tuple[str]:
+        """ Check channel for updates and return all new messages """
 
     def close(self) -> None:
-        """ Do something on closing application """
-        # for implementation in nested connectors
+        """ Do something on closing connector """
 
 
 class FileConnector(Connector):
@@ -120,52 +116,26 @@ class FolderConnector(Connector):
 
 class SQLConnector(Connector):
     """ Listen on SQL table for updates """
-    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
+    def __init__(self, cid: str | int, name: str, *, connstr: str, modified: dt.datetime = None, logger=None, **kwargs):
         super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
-        self.__conn = None
-        self.__cursor = None
-        self.state = self.connect()
-
-    def connect(self):
-        """ Establish SQL connection """
-        try:
-            engine = importlib.import_module(self.engine)
-            self.__conn = engine.connect(server=self.server,
-                                         database=self.database,
-                                         user=getattr(self, 'user', None),
-                                         password=getattr(self, 'password', None),
-                                         charset=getattr(self, 'charset', 'UTF-8'),
-                                         as_dict=True)
-            self.__cursor = self.__conn.cursor()
-        except Exception as ex:
-            return ex
+        self.__engine = sa.create_engine(connstr)
+        schema, name = kwargs['table'].split('.')
+        self.table = sa.table(name, schema=schema)
+        self.order = sa.column(kwargs['order'])
 
     def close(self):
         """ Close SQL connection """
-        if self.__cursor is not None:
-            self.__cursor.close()
-        if self.__conn is not None:
-            self.__conn.close()
+        self.__engine.dispose()
 
     def check(self) -> tuple:
-        if self.state:
-            return (str(self.state),)
-        for attempt in range(2):
-            try:
-                self.__cursor.execute(f'SELECT * FROM {self.table} WHERE {self.order} > %s ORDER BY {self.order}', params=(self.last_modified,))
-                rows = self.__cursor.fetchall()
-                break
-            except Exception as ex:
-                self.state = self.connect()
-                if self.state:
-                    return (str(self.state),)
-                elif attempt:
-                    return (str(ex),)
-                continue
+        query = sa.select('*').select_from(self.table).where(self.order > self.last_modified).order_by(self.order)
+        with self.__engine.connect() as sql:
+            rows = tuple(row._asdict() for row in sql.execute(query).all())
+        self.__engine.dispose()
         if not rows:
             return tuple()
-        self.last_modified = max([row[self.order] for row in rows])
-        content = tuple(', '.join(f'{k} = {v}' for k, v in row.items() if k != self.order) for row in rows)
+        self.last_modified = max((row[self.order.name] for row in rows))
+        content = tuple('\n'.join(f'{k} = {v}' for k, v in row.items() if k != self.order.name) for row in rows)
         return content
 
 class ConnectorMap(Enum):
