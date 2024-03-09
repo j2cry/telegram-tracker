@@ -5,15 +5,14 @@ The service is designed for tracking logs in files, folders and SQL tables with 
 ### `TRACKER.parameter`
 Contains general key:value parameters
 
-| identifier         | description                                                    |
-|--------------------|----------------------------------------------------------------|
-| TOKEN              | Telegram API token                                             |
-| REQUEST_MAXTIME    | The time during which the access request is valid (in seconds) |
-| READ_TIMEOUT       | Waiting time for sending a message                             |
-| CHANNELS_PER_PAGE  | Number of items per page in subscriptions menu                 |
-| DELAY              | Timeout before starting and stopping listeners                 |
-| ACTUALIZE_INTERVAL | Interval between connector configurations reload               |
-| SILENT_ACTUALIZE   | Notify subscribers if channel was enabled/disabled             |
+| identifier                | description                                                    |
+|---------------------------|----------------------------------------------------------------|
+| ACCESS_REQUEST_MAXTIME    | The time during which the access request is valid (in seconds) |
+| READ_TIMEOUT              | Waiting time for sending a message                             |
+| CHANNELS_PER_PAGE         | Number of items per page in subscriptions menu                 |
+| UPDOWN_DELAY              | Timeout before starting and stopping listeners                 |
+| ACTUALIZE_INTERVAL        | Interval between connector configurations reload               |
+| SILENT_ACTUALIZE          | Notify subscribers if channel was enabled/disabled             |
 
 ### `TRACKER.permission`
 Contains user access level flags.
@@ -54,6 +53,7 @@ Contains information about individual subscriptions.
 | `/silent`    | USER \| ADMIN \| MASTER | Temporarily disable notifications                             |
 | `/check`     | USER \| ADMIN \| MASTER | Immediately check channels for updates                        |
 | `/actualize` | ADMIN \| MASTER         | Immediately actualize connectors configuration                |
+| `/reload`    | ADMIN \| MASTER         | Reload bot configuration                                      |
 | `/shutdown`  | MASTER                  | Stop listeners and shutdown Tracker                           |
 
 

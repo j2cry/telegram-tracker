@@ -1,0 +1,42 @@
+LOGFILE: logs/tracker.log
+LOGLEVEL: DEBUG
+LOGSIZE: 1048576
+LOGBACKUP: 5
+
+READ_TIMEOUT: 60
+WRITE_TIMEOUT: 60
+CONNECT_TIMEOUT: 30
+POOL_TIMEOUT: 10
+UPDOWN_DELAY: 2.5
+POLLING: 600
+SILENT_ACTUALIZE: False
+TEXT_MAX_LENGTH: 4096
+ACCESS_REQUEST_MAXTIME: 43200
+ACTUALIZE_INTERVAL: 00:05
+CHANNELS_PER_PAGE: 5
+NOTIFICATION_LIFETIME: 150
+RETRY_INTERVAL: 1
+# MESSAGES
+MESSAGE_NOT_ALLOWED: ⛔ Your permission level ({flag}) is insufficient to perform this operation.
+MESSAGE_ALREADY_ACCESSIBLE: You already have access ({flag}).
+MESSAGE_ACCESS_REQUESTED: You have requested access. Your request is valid until {maxtime}. If you have not received a response after this time, contact the administrator.
+MESSAGE_ACCESS_REQUEST_TEXT: User {username} requested access. This request will be automatically rejected on {maxtime}.
+MESSAGE_REQUEST_APPROVED: Request was approved by {username}.
+MESSAGE_REQUEST_REJECTED: Request was rejected by {username}.
+MESSAGE_NOTIFICATION_DISABLED: Notifications are disabled until {sleeptime}.
+MESSAGE_NOTIFICATION_ENABLED: Notifications are enabled again.
+MESSAGE_RESUME_SUBSCRIPTION: Channel {name} was enabled. Your subscription has been renewed.
+MESSAGE_SUSPEND_SUBSCRIPTION: Channel {name} was disabled. Your subscription has been suspended.
+MESSAGE_CHECK_TEXT: Forcing listeners...
+MESSAGE_ACTUALIZE_TEXT: Connectors configuration reloaded.
+MESSAGE_SHUTDOWN_TEXT: Shutdown job was scheduled. See ya! 👋
+MESSAGE_WRONG_ARGUMENT: Argument you passed has the wrong format.
+MESSAGE_SQL_CONNECTION_LOST: ❗❗❗ UFO has stolen your SQL connection [{name}] 👽💀👻😱
+MESSAGE_ASSERTION: I think i'm gonna throw up 🤢. Check my log please.
+MESSAGE_DONE: ✔ done.
+MESSAGE_RELOAD_CONFIGURATION: |-
+  ✔ Configuration reloaded.
+  Keep in mind that in order to apply the timeout settings, you should completely restart the bot.
+
+# UI TEXTS
+UI_SUBSCRIPTIONS_MENU_HEADER: Currently available channels ({page}/{total})

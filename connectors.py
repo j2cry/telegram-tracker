@@ -1,20 +1,25 @@
+import datetime as dt
+import enum
 import os
 import pathlib
-import importlib
-import datetime as dt
-from enum import Enum
-from itertools import chain
-from abc import ABC, abstractmethod
 import sqlalchemy as sa
+import typing as t
+from abc import ABC, abstractmethod
 
 
 class Connector:
-    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, logger=None, **kwargs):
+    def __init__(self,
+                 channel_id: str | int,
+                 name: str,
+                 *,
+                 modified: dt.datetime | None = None,
+                 logger=None,
+                 **kwargs):
         """ Base connector initializer
 
         Parameters
         ----------
-        cid : str or int
+        channel_id : str or int
             Channel id
         name : str
             Channel visible name
@@ -24,11 +29,11 @@ class Connector:
 
         """
         # common parameters
-        self.cid = cid
+        self.channel_id = int(channel_id)
         self.name = name
         # service parameters
         self.last_modified = modified if isinstance(modified, dt.datetime) else dt.datetime.now()
-        self.logger = logger
+        self.__logger = logger
         # other parameters
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -41,7 +46,7 @@ class Connector:
         }
 
     @abstractmethod
-    def check(self) -> tuple | tuple[str]:
+    def check(self) -> tuple[str, ...]:
         """ Check channel for updates and return all new messages """
 
     def close(self) -> None:
@@ -50,7 +55,10 @@ class Connector:
 
 class FileConnector(Connector):
     """ Listen on file for updates """
-    def check(self):
+    path: str
+
+    def check(self) -> tuple[str, ...]:
+        # assert hasattr(self, 'path'), "Incorrect connector configuration: path is required"
         if not os.path.exists(self.path):
             return tuple()
         # get last datetime file was modified
@@ -66,25 +74,46 @@ class FileConnector(Connector):
         return (content,)
 
 
-class FolderConnector(Connector):
-    """ Listen on folder for changes """
-    class TriggerOn(Enum):
-        ADD = 0x01
-        DEL = 0x02
-        ANY = 0x03
+class FoldersConnector(Connector):
+    paths: t.Sequence[str]
 
-    showfuncMap = {
-        'LIST': lambda files: '\n' + '\n'.join(files),
-        'COUNT': lambda files: f' {len(files)}'
-    }
-
-    def __init__(self, cid: str | int, name: str, *, modified: dt.datetime = None, files: tuple = None, logger=None, **kwargs):
-        super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
-        self.trigger = self.TriggerOn[kwargs.get('trigger', 'ANY').upper()].value
-        self.showfunc = self.showfuncMap[kwargs.get('show', 'COUNT').upper()]
+    def __init__(self,
+                 channel_id: str | int,
+                 name: str,
+                 *,
+                 modified: dt.datetime | None = None,
+                 files: t.MutableMapping[str, set[str]] | None = None,
+                 logger=None,
+                 **kwargs):
         # collect files on first run
-        self.files = files if isinstance(files, tuple) else \
-            tuple(*chain((pathlib.Path(path, name).as_posix() for name in filenames) for path, _, filenames in os.walk(self.path)))
+        self.files = (files if isinstance(files, t.MutableMapping)
+                      else {p: self.__collect_folder_content(p) for p in kwargs['paths']})
+        super().__init__(channel_id, name, modified=modified, logger=logger, **kwargs)
+
+    @staticmethod
+    def __collect_folder_content(path: str) -> set[str]:
+        """ Collect files list tree in specified folder """
+        files = set()
+        for p, _, filenames in os.walk(path):
+            files.update(pathlib.Path(p, name).as_posix() for name in filenames)
+        return files
+
+    def check(self) -> tuple[str, ...]:
+        """ Check specified folders for new files """
+        content = []
+        for path in set(self.paths):
+            _files = self.__collect_folder_content(path)
+            # check for folder content changes
+            added = _files.difference(self.files[path])
+            removed = self.files[path].difference(_files)
+            if added or removed:
+                content.append(f'[{path}]\n'
+                               f'added {len(added)} file(s);\n'
+                               f'removed {len(removed)} file(s);')
+            # remember folder content
+            self.files[path] = _files
+            self.last_modified = dt.datetime.now()
+        return tuple(content)
 
     @property
     def context(self):
@@ -93,41 +122,28 @@ class FolderConnector(Connector):
             'files': self.files
         }
 
-    def check(self):
-        if not os.path.exists(self.path):
-            self.files = tuple()
-            return self.files
-        files = []
-        for path, _, filenames in os.walk(self.path):
-            files.extend(pathlib.Path(path, name).as_posix() for name in filenames)
-        # skip first run
-        content = []
-        if self.files is not None:
-            # check for updates
-            if (_files := set(self.files).difference(files)) and (self.trigger & self.TriggerOn.DEL.value):
-                content.append(f'Removed files:{self.showfunc(_files)}')
-            if (_files := set(files).difference(self.files)) and (self.trigger & self.TriggerOn.ADD.value):
-                content.append(f'Added files:{self.showfunc(_files)}')
-            self.last_modified = dt.datetime.now()
-        # remember state
-        self.files = tuple(files)
-        return tuple(content)
-
 
 class SQLConnector(Connector):
     """ Listen on SQL table for updates """
-    def __init__(self, cid: str | int, name: str, *, connstr: str, modified: dt.datetime = None, logger=None, **kwargs):
-        super().__init__(cid, name, modified=modified, logger=logger, **kwargs)
+    def __init__(self,
+                 channel_id: str | int,
+                 name: str,
+                 *,
+                 connstr: str,
+                 modified: dt.datetime | None = None,
+                 logger=None,
+                 **kwargs):
         self.__engine = sa.create_engine(connstr)
-        schema, name = kwargs['table'].split('.')
-        self.table = sa.table(name, schema=schema)
-        self.order = sa.column(kwargs['order'])
+        schema, tbname = kwargs.pop('table').split('.')
+        self.table = sa.table(tbname, schema=schema)
+        self.order = sa.column(kwargs.pop('order'))
+        super().__init__(channel_id, name, modified=modified, logger=logger, **kwargs)
 
     def close(self):
         """ Close SQL connection """
         self.__engine.dispose()
 
-    def check(self) -> tuple:
+    def check(self) -> tuple[str, ...]:
         query = sa.select('*').select_from(self.table).where(self.order > self.last_modified).order_by(self.order)
         with self.__engine.connect() as sql:
             rows = tuple(row._asdict() for row in sql.execute(query).all())
@@ -135,11 +151,15 @@ class SQLConnector(Connector):
         if not rows:
             return tuple()
         self.last_modified = max((row[self.order.name] for row in rows))
-        content = tuple('\n'.join(f'{k} = {v}' for k, v in row.items() if k != self.order.name) for row in rows)
+        content = tuple(f'[{row[self.order.name].strftime("%d.%m.%Y %H:%M:%S")}]\n' +
+                        '\n'.join(f'{k} = {v}'
+                        for k, v in row.items() if k != self.order.name)
+                        for row in rows)
         return content
 
-class ConnectorMap(Enum):
+
+class ConnectorMap(enum.Enum):
     """ Implemented connectors map for channels.cnf """
     FILE = FileConnector
-    FOLDER = FolderConnector
+    FOLDERS = FoldersConnector
     SQL = SQLConnector

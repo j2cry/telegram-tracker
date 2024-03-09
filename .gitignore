@@ -3,5 +3,5 @@
 /logs/
 /sql/dev.sql
 /venv/
-draft.ipynb
+*.ipynb
 TODO
